@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>CrayPlace Pro - Multiplayer</title>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+        import { getDatabase, ref, push, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyAGF-lvKGoO-Q4IWiz1JjgqbidumZKS6fk",
+            authDomain: "crayplace.firebaseapp.com",
+            databaseURL: "https://crayplace-default-rtdb.firebaseio.com",
+            projectId: "crayplace",
+            storageBucket: "crayplace.firebasestorage.app",
+            messagingSenderId: "507860803588",
+            appId: "1:507860803588:web:07d3c978f9676563019551"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        window.db = db;
+        window.ref = ref;
+        window.push = push;
+        window.onValue = onValue;
+    </script>
+    <style>
+        body { margin: 0; background: #333; overflow: hidden; font-family: Arial, sans-serif; }
+        canvas { cursor: default; image-rendering: pixelated; }
+        .ui { position: fixed; background: rgba(0, 0, 0, 0.8); color: white; padding: 10px; border-radius: 8px; z-index: 100; }
+        #langBox { top: 10px; left: 10px; cursor: pointer; font-weight: bold; }
+        #coords { top: 10px; right: 10px; font-weight: bold; }
+        #timer { bottom: 20px; left: 50%; transform: translateX(-50%); font-weight: bold; font-size: 20px; padding: 15px; }
+        #palette { bottom: 20px; right: 20px; }
+        .color-box { width: 30px; height: 30px; border: 1px solid #fff; cursor: pointer; display: inline-block; margin-right: 5px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+<div id="langBox" class="ui" onclick="toggleLang()">🇹🇷 TR</div>
+<div id="coords" class="ui">X: 0, Y: 0</div>
+<div id="timer" class="ui">Hazır!</div>
+<div id="palette" class="ui">
+    <span id="txtColor">Renk:</span> <input type="color" id="colorPicker" onchange="updateColor(this.value)">
+    <div id="recent" style="margin-top:10px;"></div>
+    <button id="txtDown" onclick="downloadFullMap()" style="width:100%; margin-top:5px; cursor:pointer;">Tüm Haritayı İndir</button>
+</div>
+
+<canvas id="crayCanvas"></canvas>
+
+<script type="module">
+    setTimeout(() => {
+        const canvas = document.getElementById('crayCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+
+        const WORLD_SIZE = 20000, PIXEL_SIZE = 50;
+        let originX = parseFloat(localStorage.getItem('camX')) || canvas.width / 2;
+        let originY = parseFloat(localStorage.getItem('camY')) || canvas.height / 2;
+        let scale = parseFloat(localStorage.getItem('camScale')) || 0.2;
+        let targetX = originX, targetY = originY, lastClick = 0;
+        
+        let pixels = {}; 
+        let lang = 'tr', mouseX = 0, mouseY = 0;
+        let currentColor = localStorage.getItem('lastColor') || '#ff0000';
+        let recentColors = JSON.parse(localStorage.getItem('recentColors')) || [];
+        document.getElementById('colorPicker').value = currentColor;
+
+        // Firebase'den veriyi dinle
+        onValue(ref(db, 'pixels'), (snapshot) => {
+            pixels = snapshot.val() || {};
+        });
+
+        window.toggleLang = function() {
+            lang = lang === 'tr' ? 'en' : 'tr';
+            document.getElementById('langBox').innerText = lang === 'tr' ? '🇹🇷 TR' : '🇬🇧 EN';
+            document.getElementById('txtColor').innerText = lang === 'tr' ? 'Renk:' : 'Color:';
+            document.getElementById('txtDown').innerText = lang === 'tr' ? 'Tüm Haritayı İndir' : 'Download Map';
+        };
+
+        window.updateColor = function(c) {
+            currentColor = c;
+            localStorage.setItem('lastColor', c);
+            if (!recentColors.includes(c)) {
+                recentColors.unshift(c);
+                if(recentColors.length > 5) recentColors.pop();
+                localStorage.setItem('recentColors', JSON.stringify(recentColors));
+                renderRecent();
+            }
+        };
+
+        function renderRecent() {
+            document.getElementById('recent').innerHTML = recentColors.map(c => 
+                `<div class="color-box" style="background:${c}" onclick="updateColor('${c}'); document.getElementById('colorPicker').value='${c}'"></div>`).join('');
+        }
+
+        function placePixel() {
+            if (Date.now() - lastClick < 1000) return;
+            let wx = Math.floor(((mouseX - originX) / scale) / PIXEL_SIZE) * PIXEL_SIZE;
+            let wy = Math.floor(((mouseY - originY) / scale) / PIXEL_SIZE) * PIXEL_SIZE;
+            
+            if (wx >= -WORLD_SIZE/2 && wx < WORLD_SIZE/2 && wy >= -WORLD_SIZE/2 && wy < WORLD_SIZE/2) {
+                push(ref(db, 'pixels'), { x: wx, y: wy, color: currentColor });
+                lastClick = Date.now();
+            }
+        }
+
+        function draw() {
+            originX += (targetX - originX) * 0.15;
+            originY += (targetY - originY) * 0.15;
+            localStorage.setItem('camX', originX);
+            localStorage.setItem('camY', originY);
+            localStorage.setItem('camScale', scale);
+            
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.setTransform(scale, 0, 0, scale, originX, originY);
+
+            for (let x = -WORLD_SIZE/2; x < WORLD_SIZE/2; x += PIXEL_SIZE) {
+                for (let y = -WORLD_SIZE/2; y < WORLD_SIZE/2; y += PIXEL_SIZE) {
+                    ctx.fillStyle = ((x/PIXEL_SIZE + y/PIXEL_SIZE) % 2 === 0) ? "#ffffff" : "#cccccc";
+                    ctx.fillRect(x, y, PIXEL_SIZE, PIXEL_SIZE);
+                }
+            }
+
+            Object.values(pixels).forEach(p => { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, PIXEL_SIZE, PIXEL_SIZE); });
+
+            let wx = Math.floor(((mouseX - originX) / scale) / PIXEL_SIZE) * PIXEL_SIZE;
+            let wy = Math.floor(((mouseY - originY) / scale) / PIXEL_SIZE) * PIXEL_SIZE;
+            document.getElementById('coords').innerText = `X: ${wx/PIXEL_SIZE}, Y: ${wy/PIXEL_SIZE}`;
+
+            if (wx >= -WORLD_SIZE/2 && wx < WORLD_SIZE/2 && wy >= -WORLD_SIZE/2 && wy < WORLD_SIZE/2) {
+                ctx.fillStyle = "rgba(0,0,0,0.5)";
+                ctx.fillRect(wx, wy, PIXEL_SIZE, PIXEL_SIZE);
+            }
+            requestAnimationFrame(draw);
+        }
+
+        canvas.onmousedown = (e) => { if (e.button === 0 || e.button === 2) placePixel(); };
+        window.onkeydown = (e) => { if (e.code === 'Space') placePixel(); };
+        window.onmousemove = (e) => { mouseX = e.clientX; mouseY = e.clientY; if(e.buttons === 4) { targetX += e.movementX; targetY += e.movementY; } };
+        canvas.oncontextmenu = (e) => e.preventDefault();
+        
+        setInterval(() => {
+            let left = (1000 - (Date.now() - lastClick)) / 1000;
+            let readyText = lang === 'tr' ? "Hazır!" : "Ready!";
+            document.getElementById('timer').innerText = left > 0 ? left.toFixed(1) + "s" : readyText;
+        }, 100);
+
+        window.onwheel = (e) => { scale = Math.min(Math.max(scale * (e.deltaY > 0 ? 0.9 : 1.1), 0.05), 2); };
+        renderRecent();
+        draw();
+    }, 1000);
+</script>
+</body>
+</html>
